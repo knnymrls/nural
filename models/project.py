@@ -28,17 +28,61 @@ class Project:
             "object_id": self.id,
             "object_type": "project",
             "chunk_type": "overview",
-            "text": f"{self.title} is a project currently marked as '{self.status}'. Description: {self.description}"
+            "text": f"Project Overview: {self.title} is a project currently marked as '{self.status}'. Description: {self.description}"
         })
 
-        # Contributor summaries
+        # Group current and past contributors
+        current_contributors = []
+        past_contributors = []
+        
+        for c in self.contributions:
+            if c.end.lower() == "present":
+                current_contributors.append(c)
+            else:
+                past_contributors.append(c)
+
+        # Create a chunk for current team
+        if current_contributors:
+            # Create a more distinctive current team chunk
+            current_team_text = f"Current Team for {self.title}: "
+            current_team_text += " | ".join(
+                f"{c.person.name} (Role: {c.role}, Focus: {c.description})"
+                for c in current_contributors
+            )
+            chunks.append({
+                "id": f"{self.id}_current_team",
+                "object_id": self.id,
+                "object_type": "project",
+                "chunk_type": "current_team",
+                "text": current_team_text,
+                "metadata": {
+                    "project": self.title,
+                    "current_contributors": [
+                        {
+                            "name": c.person.name,
+                            "role": c.role,
+                            "description": c.description
+                        }
+                        for c in current_contributors
+                    ]
+                }
+            })
+
+        # Create chunks for individual contributors (both current and past)
         for i, c in enumerate(self.contributions):
+            status = "currently" if c.end.lower() == "present" else f"from {c.start} to {c.end}"
             chunks.append({
                 "id": f"{self.id}_contributor_{i}",
                 "object_id": self.id,
                 "object_type": "project",
                 "chunk_type": "contributor",
-                "text": f"{c.person.name} worked on {self.title} as a {c.role} from {c.start} to {c.end}. {c.description}"
+                "text": f"Contributor: {c.person.name} {status} works on {self.title} as a {c.role}. {c.description}",
+                "metadata": {
+                    "name": c.person.name,
+                    "role": c.role,
+                    "status": status,
+                    "description": c.description
+                }
             })
 
         return chunks

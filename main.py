@@ -11,7 +11,47 @@ openai.api_key = OPENAI_API_KEY
 def ask_nural(question: str, store: ChunkStore, memory: ChatMemory) -> str:
     # Get relevant context from the knowledge base
     top_chunks = store.query(question, top_k=5)
-    context = "\n".join(f"- {c['text']}" for c in top_chunks)
+    
+    # # Debug: Print retrieved chunks with more detail
+    # print("\n🔍 Retrieved chunks:")
+    # for chunk in top_chunks:
+    #     print(f"- Type: {chunk['object_type']}, Chunk: {chunk['chunk_type']}")
+    #     print(f"  Text: {chunk['text']}")
+    #     if 'metadata' in chunk:
+    #         print(f"  Metadata: {chunk['metadata']}")
+    
+    # Group chunks by type for better context organization
+    project_chunks = []
+    profile_chunks = []
+    other_chunks = []
+    
+    for chunk in top_chunks:
+        if chunk["object_type"] == "project":
+            project_chunks.append(chunk)
+        elif chunk["object_type"] == "profile":
+            profile_chunks.append(chunk)
+        else:
+            other_chunks.append(chunk)
+    
+    # Build structured context
+    context_parts = []
+    
+    if project_chunks:
+        context_parts.append("Project Information:")
+        for chunk in project_chunks:
+            context_parts.append(f"- {chunk['text']}")
+    
+    if profile_chunks:
+        context_parts.append("\nProfile Information:")
+        for chunk in profile_chunks:
+            context_parts.append(f"- {chunk['text']}")
+    
+    if other_chunks:
+        context_parts.append("\nOther Information:")
+        for chunk in other_chunks:
+            context_parts.append(f"- {chunk['text']}")
+    
+    context = "\n".join(context_parts)
     
     # Get conversation history
     history = memory.get_history()
@@ -55,29 +95,78 @@ def chat_mode(store: ChunkStore):
         print(f"\n🔍 Answer:\n{reply}\n")
 
 
-def build_chunk_store(cache_file="data/chunks.json") -> ChunkStore:
+def regenerate_chunks(store: ChunkStore, cache_file: str = "data/chunks.json") -> ChunkStore:
+    """Regenerate and save chunks from sample data."""
+    print("🔄 Regenerating chunks from sample data...")
+    
+    # Remove existing cache file to force regeneration
+    if os.path.exists(cache_file):
+        os.remove(cache_file)
+        print("🗑️ Removed existing cache file")
+    
+    # Create new store
+    store = ChunkStore()
+    
+    # Get fresh sample data
+    profiles = get_sample_data()
+    
+    # Debug: Print chunk creation
+    print("\n📦 Creating chunks:")
+    
+    # First, create project chunks to ensure they exist
+    projects = {}
+    for profile in profiles:
+        for contrib in profile.contributions:
+            if contrib.project.title not in projects:
+                projects[contrib.project.title] = contrib.project
+                print(f"\nCreating chunks for project: {contrib.project.title}")
+                project_chunks = contrib.project.to_chunks()
+                for chunk in project_chunks:
+                    print(f"- Type: {chunk['object_type']}, Chunk: {chunk['chunk_type']}")
+                    print(f"  Text: {chunk['text']}")
+                store.bulk_add(project_chunks)
+    
+    # Then add profile and post chunks
+    for profile in profiles:
+        print(f"\nCreating chunks for profile: {profile.name}")
+        profile_chunks = profile.to_chunks()
+        for chunk in profile_chunks:
+            print(f"- Type: {chunk['object_type']}, Chunk: {chunk['chunk_type']}")
+            print(f"  Text: {chunk['text']}")
+        store.bulk_add(profile_chunks)
+        
+        for post in profile.posts:
+            post_chunk = post.to_chunk()
+            print(f"\nPost by {post.author.name}")
+            print(f"- Type: {post_chunk['object_type']}, Chunk: {post_chunk['chunk_type']}")
+            print(f"  Text: {post_chunk['text']}")
+            store.add_chunk(post_chunk)
+    
+    # Save to file
+    store.save(cache_file)
+    print(f"\n✅ Successfully regenerated {store.count()} chunks")
+    
+    # Debug: Verify current team chunks
+    print("\n🔍 Verifying current team chunks:")
+    for chunk in store.chunks:
+        if chunk["chunk_type"] == "current_team":
+            print(f"- Project: {chunk['metadata']['project']}")
+            print(f"  Text: {chunk['text']}")
+    
+    return store
+
+
+def build_chunk_store(cache_file="data/chunks.json", force_regenerate=False) -> ChunkStore:
     # Ensure data directory exists
     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
     
+    # If force_regenerate is True or cache doesn't exist, regenerate
+    if force_regenerate or not os.path.exists(cache_file):
+        return regenerate_chunks(ChunkStore(), cache_file)
+    
+    # Otherwise load from cache
     store = ChunkStore()
-
-    # Load from disk if available
-    if os.path.exists(cache_file):
-        store.load(cache_file)
-        return store
-
-    # Otherwise, build from scratch
-    profiles = get_sample_data()
-
-    for p in profiles:
-        store.bulk_add(p.to_chunks())
-        for post in p.posts:
-            store.add_chunk(post.to_chunk())
-        for contrib in p.contributions:
-            store.bulk_add(contrib.project.to_chunks())
-
-    store.save(cache_file)
-    print(f"✅ Embedded and saved {store.count()} chunks to {cache_file}")
+    store.load(cache_file)
     return store
 
 
@@ -95,7 +184,7 @@ def main():
         if choice == "1":
             chat_mode(store)
         elif choice == "2":
-            store = build_chunk_store()
+            store = build_chunk_store(force_regenerate=True)
         elif choice == "3":
             print("👋 Goodbye!")
             break
