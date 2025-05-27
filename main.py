@@ -1,94 +1,107 @@
+import os
 import openai
 from config import OPENAI_API_KEY
-from data.sample_data import get_sample_employees
-from utils.formatter import profile_to_string
-from utils.embedding import rank_profiles, get_embedding
-from utils.embedding_cache import get_or_create_embeddings, save_embeddings
+from utils.chunkstore import ChunkStore
+from utils.chat_memory import ChatMemory
+from data.sample_data import get_sample_data
 
 openai.api_key = OPENAI_API_KEY
 
-def chat_mode(profile_texts, profile_embeddings):
-    """Run the persistent-memory chat interface for employee Q&A."""
-    chat_history = [
-        {
-            "role": "system",
-            "content": (
-                "You are Nexus, an intelligent internal knowledge assistant that understands employee skills, experience, and project history. "
-                "You can answer any type of question about employees by analyzing their profiles, including:\n"
-                "- Location-based queries (e.g., 'who works in SF?', 'employees near Tokyo')\n"
-                "- Team/role queries (e.g., 'who are the engineers?', 'show me the marketing team')\n"
-                "- Skill-based queries (e.g., 'who knows Python?', 'people with cloud experience')\n"
-                "- Project-based queries (e.g., 'recent projects', 'AI initiatives')\n"
-                "- Language queries (e.g., 'who speaks Spanish?', 'multilingual employees')\n"
-                "- Experience queries (e.g., 'senior engineers', 'people with startup experience')\n"
-                "- Impact queries (e.g., 'projects with highest impact', 'revenue growth initiatives')\n"
-                "Analyze the entire dataset to find relevant information and provide comprehensive answers. If you don't know something or don't get what the user is asking ask for a follow up question until you understand the question. And end with a short follow up question."
-                "Be direct, human, and include specific details from the profiles when relevant."
-            )
-        }
-    ]
 
-    print("\n💬 Nexus is online. Ask about employees. Type 'q' to quit.\n")
+def ask_nural(question: str, store: ChunkStore, memory: ChatMemory) -> str:
+    # Get relevant context from the knowledge base
+    top_chunks = store.query(question, top_k=5)
+    context = "\n".join(f"- {c['text']}" for c in top_chunks)
+    
+    # Get conversation history
+    history = memory.get_history()
+    
+    # Create the prompt with context
+    prompt = f"""Context from knowledge base:
+{context}
+
+User Question: {question}"""
+
+    history.append({"role": "user", "content": prompt})
+
+    response = openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=history,
+        temperature=0.7
+    )
+    answer = response.choices[0].message.content.strip()
+    
+    # Add this interaction to memory
+    memory.add_interaction(context, question, answer)
+    
+    return answer
+
+
+def chat_mode(store: ChunkStore):
+    print("\n💬 Nural is online. Ask about employees. Type 'q' to quit, 'clear' to reset conversation.\n")
+    memory = ChatMemory()
 
     while True:
         user_input = input("🧠 Ask a question: ").strip()
         if user_input.lower() == 'q':
             print("👋 Goodbye!")
             break
+        elif user_input.lower() == 'clear':
+            memory.clear()
+            print("🧹 Conversation history cleared.")
+            continue
 
-        # Retrieve top 3 profile texts
-        top_indices = rank_profiles(user_input, profile_texts, profile_embeddings)
-        top_profiles = [profile_texts[i] for i in top_indices[:5]]
-
-        # Append user query with relevant profiles to memory
-        chat_history.append({
-            "role": "user",
-            "content": f"{user_input}\n\nRelevant employee profiles:\n\n" + "\n\n".join(top_profiles)
-        })
-
-        # Ask OpenAI
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=chat_history,
-            temperature=0.7  # Add some creativity in how it analyzes and presents the data
-        )
-
-        reply = response.choices[0].message.content.strip()
+        reply = ask_nural(user_input, store, memory)
         print(f"\n🔍 Answer:\n{reply}\n")
-        chat_history.append({"role": "assistant", "content": reply})
 
-def regenerate_embeddings(profile_texts):
-    """Force regeneration of embeddings."""
-    print("🔄 Regenerating embeddings...")
-    embeddings = [get_embedding(text) for text in profile_texts]
-    save_embeddings(profile_texts, embeddings)
-    return profile_texts, embeddings
+
+def build_chunk_store(cache_file="data/chunks.json") -> ChunkStore:
+    # Ensure data directory exists
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    
+    store = ChunkStore()
+
+    # Load from disk if available
+    if os.path.exists(cache_file):
+        store.load(cache_file)
+        return store
+
+    # Otherwise, build from scratch
+    profiles = get_sample_data()
+
+    for p in profiles:
+        store.bulk_add(p.to_chunks())
+        for post in p.posts:
+            store.add_chunk(post.to_chunk())
+        for contrib in p.contributions:
+            store.bulk_add(contrib.project.to_chunks())
+
+    store.save(cache_file)
+    print(f"✅ Embedded and saved {store.count()} chunks to {cache_file}")
+    return store
+
 
 def main():
-    employees = get_sample_employees()
-    profile_texts = [profile_to_string(p) for p in employees]
-
-    # Get initial embeddings from cache or create new ones if needed
-    profile_texts, profile_embeddings = get_or_create_embeddings(profile_texts)
+    store = build_chunk_store()
 
     while True:
         print("\n📋 Menu:")
-        print("1. Chat about employees")
-        print("2. Regenerate embeddings")
+        print("1. Chat with Nural")
+        print("2. Reload and regenerate chunks")
         print("3. Quit")
 
         choice = input("\nSelect an option (1-3): ").strip()
 
         if choice == "1":
-            chat_mode(profile_texts, profile_embeddings)
+            chat_mode(store)
         elif choice == "2":
-            profile_texts, profile_embeddings = regenerate_embeddings(profile_texts)
-            print("✅ Embeddings regenerated successfully!")
+            store = build_chunk_store()
         elif choice == "3":
             print("👋 Goodbye!")
             break
         else:
             print("❌ Invalid option. Please try again.")
+
 
 if __name__ == "__main__":
     main()
