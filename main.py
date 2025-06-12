@@ -10,7 +10,7 @@ openai.api_key = OPENAI_API_KEY
 
 def ask_nural(question: str, store: ChunkStore, memory: ChatMemory) -> str:
     # Get relevant context from the knowledge base
-    top_chunks = store.query(question, top_k=5)
+    top_chunks = store.query(question, top_k=10)
     
     # # Debug: Print retrieved chunks with more detail
     # print("\n🔍 Retrieved chunks:")
